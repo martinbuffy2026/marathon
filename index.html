@@ -485,6 +485,10 @@ svg.fig{display:block;width:100%;height:100%}
 .sh-card{position:absolute;left:0;right:0;bottom:0;max-height:88vh;overflow:auto;background:var(--surface);border-radius:18px 18px 0 0;padding:20px max(18px,env(safe-area-inset-right,0px)) calc(20px + env(safe-area-inset-bottom,0px)) max(18px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;gap:10px}
 @media (min-width:700px){.sh-card{left:50%;right:auto;bottom:auto;top:50%;transform:translate(-50%,-50%);width:min(560px,92vw);border-radius:16px}}
 .sh-x{position:absolute;top:12px;right:12px}
+img.fig.gif{display:block;width:100%;height:100%;object-fit:contain;background:#fff;border-radius:inherit}
+.sh-fig img.fig.gif{border-radius:12px}
+.exdb-cap{font-size:12px;color:var(--muted);margin:4px 0 0;text-transform:capitalize}
+.row-btns{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:4px 0}
 .sh-fig{background:var(--sunk);border-radius:12px;border:1px solid var(--line);aspect-ratio:200/130;max-width:100%}
 .tgtline{font-size:15px}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;align-self:flex-start}
@@ -516,6 +520,9 @@ svg.fig{display:block;width:100%;height:100%}
 <main class="wrap" id="view" data-app></main>
 <div id="sheet" hidden data-app></div>
 <div id="toast" hidden role="status" data-app></div>
+<script data-app>
+const EXDB_KEY = "";
+</script>
 <script data-app>
 /* ---------- Stick-figure animation engine ----------
    Side view, figure faces right (+x). Model coords: y up, ground y = 0.
@@ -2642,6 +2649,122 @@ const IDB = {
   async set(k, v) { try { const d = await this.open(); await new Promise((res, rej) => { const t = d.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = res; t.onerror = () => rej(t.error); }); } catch (e) { } },
   async del(k) { try { const d = await this.open(); await new Promise((res) => { const t = d.transaction('kv', 'readwrite'); t.objectStore('kv').delete(k); t.oncomplete = res; t.onerror = res; }); } catch (e) { } },
 };
+/* ---------- ExerciseDB animations (RapidAPI · AscendAPI) ----------
+   With an API key, each exercise and stretch is matched to an ExerciseDB animation once,
+   the GIF is saved on this device (IndexedDB) and shown instead of the drawing, so it works offline.
+   The key comes from the .env file at build time (EXERCISEDB_KEY) or from Settings on this device.
+   Moves with no good match keep the drawing. */
+const EXDB_Q = {
+  'jump-rope': ['jump rope'],
+  'leg-press': ['sled 45° leg press', 'sled 45 leg press', 'leg press'],
+  'romanian-deadlift': ['dumbbell romanian deadlift', 'romanian deadlift'],
+  'split-squat': ['dumbbell single leg split squat', 'bulgarian split squat', 'split squat'],
+  'leg-curl': ['lever seated leg curl', 'seated leg curl', 'leg curl'],
+  'calf-raise': ['single leg calf raise', 'one leg calf raise', 'standing calf raise'],
+  'plank': ['front plank', 'plank'],
+  'pull-up': ['pull-up', 'pull up'],
+  'step-up': ['dumbbell step-up', 'step-up'],
+  'leg-extension': ['lever leg extension', 'leg extension'],
+  'seated-calf-raise': ['lever seated calf raise', 'seated calf raise'],
+  'single-leg-bridge': ['single leg bridge', 'one leg bridge', 'glute bridge'],
+  'tibialis-raise': ['tibialis raise', 'toe raise', 'tibialis'],
+  'step-down': ['step down', 'step-down'],
+  'single-leg-balance': ['single leg balance', 'one leg balance'],
+  'push-up': ['push-up', 'push up'],
+  'sit-up': ['sit-up', 'sit up'],
+  'hip-flexor-stretch': ['kneeling hip flexor stretch', 'hip flexor stretch', 'hip flexor'],
+  'worlds-greatest': ['world greatest stretch', 'worlds greatest stretch', 'world\'s greatest stretch'],
+  'pigeon': ['pigeon', 'piriformis stretch'],
+  'butterfly': ['butterfly', 'seated groin stretch'],
+  'hip-circles': ['hip circles'],
+  'knee-to-wall': ['knee to wall', 'ankle dorsiflexion'],
+  'calf-stretch': ['calf stretch with hands against wall', 'standing calf stretch', 'calf stretch'],
+  'soleus-stretch': ['soleus stretch', 'bent knee calf stretch'],
+  'ankle-circles': ['ankle circles'],
+  'quad-stretch': ['standing quadriceps stretch', 'quadriceps stretch', 'quad stretch'],
+  'hamstring-strap': ['hamstring stretch', 'lying hamstring'],
+  'cat-cow': ['cat cow', 'cat stretch'],
+  'childs-pose': ['child pose', 'childs pose', 'child\'s pose'],
+  'thread-needle': ['thread the needle'],
+  'doorway-chest': ['doorway chest stretch', 'chest stretch'],
+};
+const ExDB = {
+  HOST: 'exercisedb.p.rapidapi.com', MAPK: 'marathon-build:exdb-map', KEYK: 'marathon-build:exdb-key', OFFK: 'marathon-build:exdb-off',
+  urls: {}, map: {}, status: '', busy: false, done: 0,
+  key() { let k = ''; try { k = localStorage.getItem(this.KEYK) || ''; } catch (e) { } return k.trim() || (typeof EXDB_KEY === 'string' ? EXDB_KEY : ''); },
+  off() { try { return localStorage.getItem(this.OFFK) === '1'; } catch (e) { return false; } },
+  saveMap() { try { localStorage.setItem(this.MAPK, JSON.stringify(this.map)); } catch (e) { } },
+  async init() {
+    try { this.map = JSON.parse(localStorage.getItem(this.MAPK) || '{}') || {}; } catch (e) { this.map = {}; }
+    if (!this.off()) {
+      let n = 0;
+      for (const [id, m] of Object.entries(this.map)) {
+        if (!m || !m.xid) continue;
+        const blob = await IDB.get('exdb:' + m.xid);
+        if (blob instanceof Blob && blob.size) { this.urls[id] = URL.createObjectURL(blob); n++; }
+      }
+      if (n) render();
+    }
+    this.fill();
+  },
+  async api(path) {
+    return fetch('https://' + this.HOST + path, { headers: { 'x-rapidapi-key': this.key(), 'x-rapidapi-host': this.HOST } });
+  },
+  pick(list, q) {
+    const words = q.toLowerCase().replace(/[^a-z0-9° ]+/g, ' ').split(/\s+/).filter(Boolean);
+    const ok = list.filter(x => x && x.id && words.every(w => String(x.name || '').toLowerCase().includes(w)));
+    ok.sort((a, b) => String(a.name).length - String(b.name).length); // the plainest name is usually the basic version
+    return ok[0] || null;
+  },
+  async fill(force) {
+    if (this.busy || this.off() || !this.key() || !navigator.onLine) return;
+    this.busy = true; this.status = 'Loading animations…'; this.paintStatus();
+    let changed = 0, stop = false;
+    for (const [id, qs] of Object.entries(EXDB_Q)) {
+      if (stop) break;
+      const m = this.map[id];
+      if (m && m.xid && this.urls[id]) continue;
+      if (m && m.none && !force) continue;
+      try {
+        let hit = m && m.xid ? { id: m.xid, name: m.name } : null;
+        for (const q of hit ? [] : qs) {
+          const r = await this.api('/exercises/name/' + encodeURIComponent(q.toLowerCase()) + '?limit=25&offset=0');
+          if (r.status === 401 || r.status === 403) { this.status = 'The API key was refused. Check it in RapidAPI and that you subscribed to ExerciseDB.'; stop = true; break; }
+          if (r.status === 429) { this.status = 'ExerciseDB limit reached for now. The rest will load another day.'; stop = true; break; }
+          if (!r.ok) continue;
+          const list = await r.json();
+          hit = this.pick(Array.isArray(list) ? list : [], q);
+          if (hit) break;
+        }
+        if (stop) break;
+        if (!hit) { this.map[id] = { none: true, t: Date.now() }; this.saveMap(); continue; }
+        let blob = null;
+        for (const res of [360, 180]) {
+          const r = await this.api('/image?exerciseId=' + encodeURIComponent(hit.id) + '&resolution=' + res);
+          if (r.status === 429) { this.status = 'ExerciseDB limit reached for now. The rest will load another day.'; stop = true; break; }
+          if (r.ok) { const b = await r.blob(); if (b.size && /image/.test(b.type || 'image/gif')) { blob = b; break; } }
+        }
+        if (!blob) continue;
+        await IDB.set('exdb:' + hit.id, blob);
+        this.map[id] = { xid: hit.id, name: hit.name }; this.saveMap();
+        this.urls[id] = URL.createObjectURL(blob); changed++;
+        if (changed % 4 === 0) render();
+      } catch (e) { this.status = 'Couldn\'t reach ExerciseDB. Animations will load next time you\'re online.'; stop = true; }
+    }
+    this.busy = false;
+    const have = Object.keys(this.urls).length;
+    if (!stop) this.status = have ? `${have} of ${Object.keys(EXDB_Q).length} moves use ExerciseDB animations. The rest keep the drawings (no good match).` : 'No animations found.';
+    if (changed) render();
+    this.paintStatus();
+  },
+  paintStatus() { const el = document.getElementById('exdb-status'); if (el) el.textContent = this.statusText(); },
+  statusText() {
+    if (this.off()) return 'Using the drawings.';
+    if (!this.key()) return 'Add your RapidAPI key to show ExerciseDB animations.';
+    return this.status || `${Object.keys(this.urls).length} of ${Object.keys(EXDB_Q).length} moves use ExerciseDB animations.`;
+  },
+  async reset() { this.map = {}; this.saveMap(); for (const u of Object.values(this.urls)) URL.revokeObjectURL(u); this.urls = {}; render(); this.fill(true); },
+};
 const PlanFile = {
   handle: null, name: '', lastSaved: null, lastLoaded: null, needsPermission: false, timer: null, lastMod: 0, busy: false,
   supported() { try { return typeof window.showSaveFilePicker === 'function' && window.self === window.top; } catch (e) { return false; } },
@@ -2833,7 +2956,10 @@ function flushPending() { for (const d of Object.keys(pending)) { clearTimeout(s
 const active = new Set();
 let io = null, rafOn = false;
 const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
-function figHTML(id, cls) { return `<svg class="fig ${cls || ''}" data-move="${id}" viewBox="${FIG.vb(MOVES[id])}" role="img" aria-label="${esc((EXERCISES[id] || STRETCHES[id] || {}).name || id)} demonstration"></svg>`; }
+function figHTML(id, cls) {
+  const g = ExDB.urls[id];
+  if (g) return `<img class="fig gif ${cls || ''}" src="${g}" alt="${esc((EXERCISES[id] || STRETCHES[id] || {}).name || id)} demonstration" loading="lazy" decoding="async">`;
+  return `<svg class="fig ${cls || ''}" data-move="${id}" viewBox="${FIG.vb(MOVES[id])}" role="img" aria-label="${esc((EXERCISES[id] || STRETCHES[id] || {}).name || id)} demonstration"></svg>`; }
 function mountFigs(root) {
   if (!io && 'IntersectionObserver' in window) {
     io = new IntersectionObserver(es => { for (const e of es) { if (e.isIntersecting) active.add(e.target); else active.delete(e.target); } kick(); }, { rootMargin: '60px' });
@@ -3586,6 +3712,7 @@ function moveGuideHTML(id) {
       <div class="step-t"><b>${esc(st[1])}</b><p>${esc(st[2])}</p></div></li>`).join('');
   return `<div class="g-head"><span class="eyebrow">${ex ? 'Strength ' + ex.group : 'Stretch & mobility'}</span><h2>${esc(it.name)}</h2><p class="tgtline">${meta}</p></div>
     <div class="sh-fig">${figHTML(id, 'lg')}</div>
+    ${ExDB.urls[id] && ExDB.map[id] ? `<p class="exdb-cap">Animation: ${esc(ExDB.map[id].name)} · ExerciseDB</p>` : ''}
     <p class="g-mus"><i class="mdot"></i><span><b>${ex ? 'Muscles working' : 'Where you should feel it'}:</b> ${esc(g.muscles || '')}</span></p>
     <h3 class="sub">Step by step</h3>
     <ol class="steps">${steps}</ol>
@@ -3636,6 +3763,12 @@ function settingsHTML() {
       <li>The <b>Marathon</b> icon appears on your Home Screen. Tap it to open your tracker. If Safari asks, sign in to Claude once.</li>
     </ol>
 `}
+    <h3 class="sub">Exercise animations (ExerciseDB)</h3>
+    <div class="grid2"><label class="fld"><span>RapidAPI key</span><input id="exdb-key" type="password" autocomplete="off" placeholder="${ExDB.key() ? 'Key saved' : 'Paste your key'}"></label>
+    <div class="col" style="justify-content:flex-end"><button class="btn ghost" data-act="exdb-save">Save key & load</button></div></div>
+    <p class="muted small" id="exdb-status">${esc(ExDB.statusText())}</p>
+    <div class="row-btns"><button class="link-btn" data-act="exdb-toggle">${ExDB.off() ? 'Use ExerciseDB animations' : 'Use the drawings instead'}</button> · <button class="link-btn" data-act="exdb-reset">Find animations again</button></div>
+    <p class="muted small">The key is kept on this device only. Each animation downloads once and then works offline. Step-by-step pictures in each guide stay as drawings.</p>
     <h3 class="sub">Syncing</h3>
     <p class="muted">${where}${Store.mode === 'db' ? ` Changes from your other devices appear automatically while the app is open${Store.lastSync ? ' (last update ' + hhmm(Store.lastSync) + ')' : ''}.` : ''}</p>
     <h3 class="sub">Plan file</h3>
@@ -3750,6 +3883,9 @@ function onClick(e) {
     case 'close': ui.sheet = null; renderSheet(); break;
     case 'confirm-yes': { const run = ui.sheet && ui.sheet.run; if (run) run(); break; }
     case 'settings': ui.sheet = { type: 'settings' }; renderSheet(); break;
+    case 'exdb-save': { const v = (document.getElementById('exdb-key') || {}).value || ''; try { if (v.trim()) localStorage.setItem(ExDB.KEYK, v.trim()); localStorage.removeItem(ExDB.OFFK); } catch (e) { } toast(v.trim() ? 'Key saved. Loading animations…' : 'Loading animations…'); ExDB.reset(); renderSheet(); break; }
+    case 'exdb-toggle': { const off = !ExDB.off(); try { off ? localStorage.setItem(ExDB.OFFK, '1') : localStorage.removeItem(ExDB.OFFK); } catch (e) { } if (off) { ExDB.urls = {}; render(); } else ExDB.init(); renderSheet(); break; }
+    case 'exdb-reset': ExDB.reset(); renderSheet(); break;
     case 'unit': Store.put('app/settings', Object.assign({}, Store.get('app/settings') || {}, { unit: b.dataset.u })); render(); break;
     case 'export': ui.sheet = { type: 'savefile' }; renderSheet(); setTimeout(() => { const i = document.getElementById('sf-name'); if (i) { i.focus(); i.select(); } }, 50); break;
     case 'savefile-go': {
@@ -3969,6 +4105,8 @@ function boot() {
   render();
   Store.connect();
   PlanFile.init();
+  ExDB.init();
+  window.addEventListener('online', () => ExDB.fill());
   // autosave on open: a restore point once the plan is loaded
   const snapOpen = () => { if (Store.connecting) return setTimeout(snapOpen, 1000); Snaps.take('App opened'); };
   setTimeout(snapOpen, 1500);
@@ -3984,7 +4122,7 @@ function boot() {
   }
 }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
-window.__MT = { Store, target, plannedSessions, weekSessions, testMovedFrom, exHistory, ui, render, coach, coachCard, dayFuel }; window.__PF = PlanFile;
+window.__MT = { ExDB, Store, target, plannedSessions, weekSessions, testMovedFrom, exHistory, ui, render, coach, coachCard, dayFuel }; window.__PF = PlanFile;
 })();
 
 </script>
